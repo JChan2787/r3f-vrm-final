@@ -1,10 +1,10 @@
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
-import { useAnimations, useFBX, useGLTF } from "@react-three/drei";
+import { useFBX, useGLTF } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Face, Hand, Pose } from "kalidokit";
 import { useControls } from "leva";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Euler, Object3D, Quaternion, Vector3 } from "three";
+import { AnimationMixer, Euler, Object3D, Quaternion, Vector3 } from "three";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useVideoRecognition } from "../hooks/useVideoRecognition";
 import { remapMixamoAnimationToVrm } from "../utils/remapMixamoAnimationToVrm";
@@ -28,6 +28,8 @@ export const VRMAvatar = ({ avatar, ...props }) => {
   const assetA = useFBX("models/animations/Swing Dancing.fbx");
   const assetB = useFBX("models/animations/Thriller Part 2.fbx");
   const assetC = useFBX("models/animations/Breathing Idle.fbx");
+  const assetD = useFBX("models/animations/Standing Idle.fbx");
+  const assetE = useFBX("models/animations/Happy.fbx");
 
   const currentVrm = userData.vrm;
 
@@ -49,23 +51,48 @@ export const VRMAvatar = ({ avatar, ...props }) => {
     return clip;
   }, [assetC, currentVrm]);
 
-  const { actions } = useAnimations(
-    [animationClipA, animationClipB, animationClipC],
-    currentVrm.scene
+  const animationClipD = useMemo(() => {
+    const clip = remapMixamoAnimationToVrm(currentVrm, assetD);
+    clip.name = "Standing Idle";
+    return clip;
+  }, [assetD, currentVrm]);
+
+  const animationClipE = useMemo(() => {
+    const clip = remapMixamoAnimationToVrm(currentVrm, assetE);
+    clip.name = "Happy";
+    return clip;
+  }, [assetE, currentVrm]);
+
+  // Own mixer — survives React re-renders
+  const mixerRef = useRef(null);
+  const activeActionRef = useRef(null);
+  const activeAnimNameRef = useRef(null);
+  const clips = useMemo(
+    () => ({ "Swing Dancing": animationClipA, "Thriller Part 2": animationClipB, "Idle": animationClipC, "Standing Idle": animationClipD, "Happy": animationClipE }),
+    [animationClipA, animationClipB, animationClipC, animationClipD, animationClipE]
   );
 
   useEffect(() => {
     const vrm = userData.vrm;
     console.log("VRM loaded:", vrm);
-    // calling these functions greatly improves the performance
     VRMUtils.removeUnnecessaryVertices(scene);
     VRMUtils.combineSkeletons(scene);
     VRMUtils.combineMorphs(vrm);
-
-    // Disable frustum culling
     vrm.scene.traverse((obj) => {
       obj.frustumCulled = false;
     });
+
+    // Create mixer once per VRM load
+    mixerRef.current = new AnimationMixer(vrm.scene);
+    activeActionRef.current = null;
+    activeAnimNameRef.current = null;
+
+    return () => {
+      if (mixerRef.current) {
+        mixerRef.current.stopAllAction();
+        mixerRef.current = null;
+      }
+    };
   }, [scene]);
 
   const setResultsCallback = useVideoRecognition(
@@ -116,6 +143,13 @@ export const VRMAvatar = ({ avatar, ...props }) => {
     setResultsCallback(resultsCallback);
   }, [resultsCallback]);
 
+  const { animation } = useControls("Animation", {
+    animation: {
+      options: ["None", "Idle", "Standing Idle", "Happy", "Swing Dancing", "Thriller Part 2"],
+      value: "Idle",
+    },
+  });
+
   const {
     aa,
     ih,
@@ -124,36 +158,41 @@ export const VRMAvatar = ({ avatar, ...props }) => {
     ou,
     blinkLeft,
     blinkRight,
+    blink,
     angry,
     sad,
     happy,
-    animation,
-  } = useControls("VRM", {
+    relaxed,
+    surprised,
+    lookUp,
+    lookDown,
+    lookLeft,
+    lookRight,
+    neutral,
+  } = useControls("Expressions", {
     aa: { value: 0, min: 0, max: 1 },
     ih: { value: 0, min: 0, max: 1 },
     ee: { value: 0, min: 0, max: 1 },
     oh: { value: 0, min: 0, max: 1 },
     ou: { value: 0, min: 0, max: 1 },
+    blink: { value: 0, min: 0, max: 1 },
     blinkLeft: { value: 0, min: 0, max: 1 },
     blinkRight: { value: 0, min: 0, max: 1 },
     angry: { value: 0, min: 0, max: 1 },
     sad: { value: 0, min: 0, max: 1 },
     happy: { value: 0, min: 0, max: 1 },
-    animation: {
-      options: ["None", "Idle", "Swing Dancing", "Thriller Part 2"],
-      value: "Idle",
-    },
+    relaxed: { value: 0, min: 0, max: 1 },
+    surprised: { value: 0, min: 0, max: 1 },
+    lookUp: { value: 0, min: 0, max: 1 },
+    lookDown: { value: 0, min: 0, max: 1 },
+    lookLeft: { value: 0, min: 0, max: 1 },
+    lookRight: { value: 0, min: 0, max: 1 },
+    neutral: { value: 0, min: 0, max: 1 },
   });
 
-  useEffect(() => {
-    if (animation === "None" || videoElement) {
-      return;
-    }
-    actions[animation]?.play();
-    return () => {
-      actions[animation]?.stop();
-    };
-  }, [actions, animation, videoElement]);
+  // Animation switching — runs in useFrame, compares by name, never re-renders
+  const animationRef = useRef(animation);
+  animationRef.current = animation;
 
   const lerpExpression = (name, value, lerpFactor) => {
     userData.vrm.expressionManager.setValue(
@@ -190,9 +229,43 @@ export const VRMAvatar = ({ avatar, ...props }) => {
     if (!userData.vrm) {
       return;
     }
+
+    // Handle animation switching
+    const wantedAnim = animationRef.current;
+    if (mixerRef.current && activeAnimNameRef.current !== wantedAnim) {
+      if (activeActionRef.current) {
+        activeActionRef.current.stop();
+      }
+      activeAnimNameRef.current = wantedAnim;
+      if (wantedAnim !== "None" && clips[wantedAnim]) {
+        const action = mixerRef.current.clipAction(clips[wantedAnim]);
+        action.play();
+        activeActionRef.current = action;
+      } else {
+        activeActionRef.current = null;
+      }
+    }
+
+    // Tick the mixer
+    if (mixerRef.current) {
+      mixerRef.current.update(delta);
+    }
+
+    if (!userData.vrm.expressionManager) {
+      userData.vrm.update(delta);
+      return;
+    }
     userData.vrm.expressionManager.setValue("angry", angry);
     userData.vrm.expressionManager.setValue("sad", sad);
     userData.vrm.expressionManager.setValue("happy", happy);
+    userData.vrm.expressionManager.setValue("relaxed", relaxed);
+    userData.vrm.expressionManager.setValue("surprised", surprised);
+    userData.vrm.expressionManager.setValue("lookUp", lookUp);
+    userData.vrm.expressionManager.setValue("lookDown", lookDown);
+    userData.vrm.expressionManager.setValue("lookLeft", lookLeft);
+    userData.vrm.expressionManager.setValue("lookRight", lookRight);
+    userData.vrm.expressionManager.setValue("neutral", neutral);
+    userData.vrm.expressionManager.setValue("blink", blink);
 
     if (!videoElement) {
       [

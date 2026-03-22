@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# User-added models (non-redistributable)
+public/models/avatar.vrm
+public/models/birb.vrm
+public/models/animations/Standing Idle.fbx
+public/models/animations/Happy.fbx
+package-lock.json
